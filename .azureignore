@@ -1,0 +1,20 @@
+# Docs and CI/CD only
+docs/
+
+# GitHub Actions uploads the full app; exclude dev artifacts
+.pytest_cache/
+tests/
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+.env
+.git/
+.github/
+
+# Airflow not needed on App Service
+airflow/
+
+# Large CSV snapshots — not needed on App Service (DB is deployed from git)
+data/raw/
+data/processed/

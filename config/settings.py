@@ -28,13 +28,18 @@ DATA_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Database ──────────────────────────────────────────────────────────────────
-# SQLite database file lives inside data/
-DATABASE_PATH: Path = _PROJECT_ROOT / "data" / "economic_stress.db"
+# SQLite database file lives inside data/ (override path via DATABASE_PATH env on Azure)
+_db_env = os.getenv("DATABASE_PATH", "")
+DATABASE_PATH: Path = Path(_db_env) if _db_env else _PROJECT_ROOT / "data" / "economic_stress.db"
 DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 # Fitted model parameters — written by the stress engine, reloaded on every run.
 # Delete this file to force a full re-fit on the next ETL run.
-STRESS_MODEL_PARAMS_PATH: Path = _PROJECT_ROOT / "data" / "stress_model_params.json"
+_stress_params_env = os.getenv("STRESS_MODEL_PARAMS_PATH", "")
+STRESS_MODEL_PARAMS_PATH: Path = (
+    Path(_stress_params_env) if _stress_params_env
+    else _PROJECT_ROOT / "data" / "stress_model_params.json"
+)
 
 # ── Unified CSV (output of transformer, input to loader) ──────────────────────
 UNIFIED_CSV_PATH: Path = DATA_PROCESSED_DIR / "unified_economic_data.csv"
@@ -45,6 +50,13 @@ MAX_RETRIES:     int = int(os.getenv("MAX_RETRIES", "3"))
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+
+# ── API / CORS (production: set CORS_ORIGINS to dashboard URL) ─────────────────
+# Comma-separated list, e.g. "https://my-dash.azurewebsites.net,http://localhost:8501"
+_cors_raw = os.getenv("CORS_ORIGINS", "*")
+CORS_ORIGINS: list[str] = ["*"] if _cors_raw.strip() == "*" else [
+    origin.strip() for origin in _cors_raw.split(",") if origin.strip()
+]
 
 # =============================================================================
 # World Bank

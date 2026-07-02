@@ -1,0 +1,58 @@
+# Deploy Streamlit dashboard to a SECOND Azure Web App.
+# Create the app in Azure Portal first, then add its publish profile secret:
+#   AZUREAPPSERVICE_PUBLISHPROFILE_<DASHBOARD_APP_NAME_UPPERCASE>
+#
+# Portal: duplicate App Service → startup command: bash startup-dashboard.sh
+
+name: Build and deploy Dashboard to Azure Web App
+
+on:
+  workflow_dispatch:
+
+env:
+  AZURE_WEBAPP_NAME: E-Commerce-Intelligence-Dashboard
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m venv antenv
+          source antenv/bin/activate
+          pip install -r requirements.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-app-dashboard
+          path: |
+            .
+            !venv/
+            !.venv/
+            !*.db
+            !**/*.db
+            !data/raw/
+            !data/processed/
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-app-dashboard
+
+      - name: Deploy dashboard to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_ECOMMERCEINTELLIGENCEDASHBOARD }}

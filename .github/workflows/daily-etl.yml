@@ -1,0 +1,30 @@
+# Daily ETL at 02:00 UTC (matches Airflow DAG schedule).
+# Requires GitHub secret AZURE_CREDENTIALS (service principal JSON).
+# See AZURE_DEPLOY.md → "Schedule daily ETL" for setup.
+
+name: Daily ETL Pipeline
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+env:
+  AZURE_WEBAPP_NAME: E-Commerce-Intelligence-Platform
+  RESOURCE_GROUP: E-Commerce-Intelligence-Platform
+
+jobs:
+  run-etl:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Run ETL on App Service
+        run: |
+          az webapp ssh --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --name "${{ env.AZURE_WEBAPP_NAME }}" \
+            --timeout 600 \
+            --command "cd /home/site/wwwroot && python main.py"

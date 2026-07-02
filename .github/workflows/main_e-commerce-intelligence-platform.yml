@@ -1,0 +1,171 @@
+# Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
+# More GitHub Actions for Azure: https://github.com/Azure/actions
+# More info on Python, GitHub Actions, and Azure App Service: https://aka.ms/python-webapps-actions
+
+name: Build and deploy Python app to Azure Web App - E-Commerce-Intelligence-Platform
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-api-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AZURE_RESOURCE_GROUP: E-Commerce-Intelligence-Platform
+  AZURE_WEBAPP_NAME: E-Commerce-Intelligence-Platform
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read #This is required for actions/checkout
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python version
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # 🛠️ Local Build Section (Optional)
+      # The following section in your workflow is designed to catch build issues early on the client side, before deployment. This can be helpful for debugging and validation. However, if this step significantly increases deployment time and early detection is not critical for your workflow, you may remove this section to streamline the deployment process.
+      - name: Create and Start virtual environment and Install dependencies
+        run: |
+          python -m venv antenv
+          source antenv/bin/activate
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: |
+          source antenv/bin/activate
+          python -m pytest tests/ -v --ignore=tests/test_airflow_structure.py
+
+      - name: Verify bootstrap database is present
+        run: test -f data/economic_stress.db
+
+      - name: Verify bootstrap database has ETL tables
+        run: |
+          python - <<'PY'
+          import sqlite3
+          conn = sqlite3.connect("data/economic_stress.db")
+          tables = {
+              row[0]
+              for row in conn.execute(
+                  "SELECT name FROM sqlite_master WHERE type='table'"
+              )
+          }
+          required = {"countries", "stress_scores", "economic_data", "indicators"}
+          missing = sorted(required - tables)
+          if missing:
+              raise SystemExit(
+                  "Bootstrap DB is missing tables: "
+                  + ", ".join(missing)
+                  + ". Run scripts/run_etl_local.bat locally, then "
+                  + "scripts/push_db_to_azure.bat"
+              )
+          countries = conn.execute("SELECT COUNT(*) FROM countries").fetchone()[0]
+          scores = conn.execute("SELECT COUNT(*) FROM stress_scores").fetchone()[0]
+          if countries == 0 or scores == 0:
+              raise SystemExit(
+                  f"Bootstrap DB is empty (countries={countries}, stress_scores={scores}). "
+                  "Run ETL before pushing."
+              )
+          print(f"Bootstrap DB OK: {countries} countries, {scores} stress scores")
+          PY
+
+      # Let Oryx build antenv on Azure (SCM_DO_BUILD_DURING_DEPLOYMENT=true).
+      # Ship source + bootstrap DB only — avoids broken cross-build venv symlinks.
+      - name: Upload artifact for deployment jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-app
+          path: |
+            .
+            !antenv/
+            !venv/
+            !.venv/
+            !data/raw/
+            !data/processed/
+
+      # 🚫 Opting Out of Oryx Build
+      # If you prefer to disable the Oryx build process during deployment, follow these steps:
+      # 1. Remove the SCM_DO_BUILD_DURING_DEPLOYMENT app setting from your Azure App Service Environment variables.
+      # 2. Refer to sample workflows for alternative deployment strategies: https://github.com/Azure/actions-workflow-samples/tree/master/AppService
+      
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      id-token: write #This is required for requesting the JWT
+      contents: read #This is required for actions/checkout
+
+    steps:
+      - name: Download artifact from build job
+        uses: actions/download-artifact@v4
+        with:
+          name: python-app
+      
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_26437637BB404FE18C3E7312102D190B }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_8D39FF09DA644397959E8999AFAEA1B3 }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_D2C8E5C91FA64C918881146E5B051BE9 }}
+
+      # Override stale portal gunicorn command before deploy (root cause of Application Error).
+      - name: Pre-configure API startup command
+        run: |
+          az webapp config set \
+            --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ env.AZURE_WEBAPP_NAME }}" \
+            --startup-file "bash startup.sh"
+
+          az webapp config appsettings set \
+            --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ env.AZURE_WEBAPP_NAME }}" \
+            --settings \
+              WEBSITES_PORT=8000 \
+              SCM_DO_BUILD_DURING_DEPLOYMENT=true \
+              PYTHONPATH=/home/site/wwwroot
+
+      - name: 'Deploy to Azure Web App'
+        uses: azure/webapps-deploy@v3
+        id: deploy-to-webapp
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          slot-name: 'Production'
+
+      - name: Post-configure API and restart
+        run: |
+          az webapp config set \
+            --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ env.AZURE_WEBAPP_NAME }}" \
+            --startup-file "bash startup.sh"
+
+          az webapp config appsettings set \
+            --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ env.AZURE_WEBAPP_NAME }}" \
+            --settings \
+              WEBSITES_PORT=8000 \
+              SCM_DO_BUILD_DURING_DEPLOYMENT=true \
+              PYTHONPATH=/home/site/wwwroot
+
+          STARTUP=$(az webapp config show \
+            --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ env.AZURE_WEBAPP_NAME }}" \
+            --query appCommandLine -o tsv)
+          echo "Startup command: ${STARTUP}"
+          if echo "${STARTUP}" | grep -qi gunicorn; then
+            echo "ERROR: Azure still using gunicorn startup — aborting."
+            exit 1
+          fi
+
+          az webapp restart \
+            --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ env.AZURE_WEBAPP_NAME }}"

@@ -25,12 +25,22 @@ DESIGN
 - CORS is open for local development (restrict in production)
 """
 
+import sys
+from pathlib import Path
+
+# Azure Oryx may run from /tmp/<id>; keep project root importable (config/, src/).
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 import sqlite3
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+import config.settings as cfg
+from src.api.database import get_db
 from src.api.routers import countries, stress, summary, trends
 
 # ── Application factory ───────────────────────────────────────────────────────
@@ -48,10 +58,10 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# ── CORS (open for local dev — tighten in production) ─────────────────────────
+# ── CORS (set CORS_ORIGINS env on Azure to your dashboard URL) ────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cfg.CORS_ORIGINS,
     allow_methods=["GET"],
     allow_headers=["*"],
 )
@@ -91,6 +101,28 @@ def root() -> dict:
         "project": "Global Economic Stress Monitoring Platform",
         "status":  "running",
     }
+
+
+@app.get(
+    "/health",
+    tags=["Health"],
+    summary="Health check with database status",
+    response_model=dict,
+)
+def health(db: sqlite3.Connection = Depends(get_db)) -> dict:
+    """Azure-friendly health probe — verifies SQLite is reachable."""
+    db_path = cfg.DATABASE_PATH
+    if not db_path.exists():
+        return {
+            "status":   "degraded",
+            "database": "missing",
+            "detail":   "Run ETL: python main.py",
+        }
+    try:
+        db.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+        return {"status": "healthy", "database": "connected"}
+    except sqlite3.Error as exc:
+        return {"status": "degraded", "database": "error", "detail": str(exc)}
 
 
 # ── Dev server entry point ─────────────────────────────────────────────────────
